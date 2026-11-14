@@ -102,7 +102,6 @@ if "board" not in st.session_state:
   st.session_state.board = chess.Board()
 if "selected_sq" not in st.session_state:
   st.session_state.selected_sq = None
-if "feedback" import *  # safe catch
 if "feedback" not in st.session_state:
   st.session_state.feedback = "Make your move."
 
