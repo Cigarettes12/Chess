@@ -1,21 +1,31 @@
-import base64
 import csv
 import io
+import json
 import random
 import chess
 import chess.pgn
-import chess.svg
 import streamlit as st
-from streamlit_clickable_images import clickable_images
+import streamlit.components.v1 as components
 
 # 1. Page Configuration
 st.set_page_config(page_title="Chess Opening Trainer", layout="centered")
+
+# Compact mobile padding so the board fits comfortably without scrolling
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # 2. Load & Parse Opening Database from openings.csv
 @st.cache_data
 def load_openings_from_csv(filepath="openings.csv"):
   database = {"White": {}, "Black": {}}
+  seen_counts = {}
 
   try:
     with open(filepath, mode="r", encoding="utf-8-sig") as f:
@@ -29,17 +39,23 @@ def load_openings_from_csv(filepath="openings.csv"):
         if color not in database or not opening or not variation or not moves_str:
           continue
 
-        # Parse standard chess notation (e.g., "1. d4 Nf6 2. Bf4") into UCI moves
+        # Auto-number duplicate variation titles so none get overwritten
+        key = (color, opening, variation)
+        seen_counts[key] = seen_counts.get(key, 0) + 1
+        display_variation = (
+            variation
+            if seen_counts[key] == 1
+            else f"{variation} #{seen_counts[key]}"
+        )
+
         pgn_io = io.StringIO(moves_str)
         game = chess.pgn.read_game(pgn_io)
         if game:
           uci_moves = [move.uci() for move in game.mainline_moves()]
           if uci_moves:
-            database[color].setdefault(opening, {})[variation] = uci_moves
+            database[color].setdefault(opening, {})[display_variation] = uci_moves
   except FileNotFoundError:
-    st.error(
-        "Could not find `openings.csv` in your repository. Please upload it to GitHub."
-    )
+    st.error("Could not find `openings.csv` in your repository.")
 
   return database
 
@@ -53,40 +69,323 @@ if "current_drills" not in st.session_state:
   st.session_state.current_drills = []
 if "drill_idx" not in st.session_state:
   st.session_state.drill_idx = 0
-if "move_idx" not in st.session_state:
-  st.session_state.move_idx = 0
-if "board" not in st.session_state:
-  st.session_state.board = chess.Board()
-if "selected_sq" not in st.session_state:
-  st.session_state.selected_sq = None
-if "feedback" not in st.session_state:
-  st.session_state.feedback = "Make your move."
+if "board_reset_counter" not in st.session_state:
+  st.session_state.board_reset_counter = 0
 
 
 def start_drill_session(drills_list):
-  """Starts a sequence of drills (either a specific variation or randomized list)."""
   st.session_state.current_drills = drills_list
   st.session_state.drill_idx = 0
+  st.session_state.board_reset_counter += 1
   st.session_state.app_mode = "drilling"
-  load_current_drill()
 
 
-def load_current_drill():
-  """Loads the active drill card."""
-  drill = st.session_state.current_drills[st.session_state.drill_idx]
-  st.session_state.move_idx = 0
-  st.session_state.board = chess.Board()
-  st.session_state.selected_sq = None
-  st.session_state.feedback = "Tap a piece to start."
+def render_animated_chessboard(drill, session_nonce):
+  """Renders an interactive chessboard.js widget with animations, highlights, and legal move dots."""
+  orientation = "white" if drill["player_color"] == chess.WHITE else "black"
+  moves_json = json.dumps(drill["moves"])
 
-  # If playing as Black, automatically push White's first move(s)
-  while st.session_state.move_idx < len(drill["moves"]):
-    if st.session_state.board.turn != drill["player_color"]:
-      opp_move = drill["moves"][st.session_state.move_idx]
-      st.session_state.board.push(chess.Move.from_uci(opp_move))
-      st.session_state.move_idx += 1
-    else:
-      break
+  html_code = f"""
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <style>
+      * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
+      body {{
+        margin: 0;
+        padding: 4px 0 8px 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        background: transparent;
+      }}
+      #status-banner {{
+        width: 100%;
+        max-width: 400px;
+        padding: 10px 14px;
+        margin-bottom: 10px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        text-align: center;
+        background-color: #e8f1fb;
+        color: #0c3b6e;
+        transition: background-color 0.2s ease, color 0.2s ease;
+      }}
+      #status-banner.error {{
+        background-color: #fde8e8;
+        color: #9b1c1c;
+      }}
+      #status-banner.success {{
+        background-color: #def7ec;
+        color: #03543f;
+      }}
+      #board {{
+        width: 100%;
+        max-width: 400px;
+        touch-action: none;
+      }}
+      /* Last-move & tap selection highlights */
+      .highlight-last {{
+        box-shadow: inset 0 0 3px 3px rgba(246, 246, 105, 0.85);
+        background-color: rgba(246, 246, 105, 0.45) !important;
+      }}
+      .highlight-selected {{
+        box-shadow: inset 0 0 3px 3px rgba(105, 190, 246, 0.9);
+        background-color: rgba(105, 190, 246, 0.45) !important;
+      }}
+      /* Legal move dot for empty destination squares */
+      .square-55d63 {{
+        position: relative;
+      }}
+      .legal-move-dot::after {{
+        content: "";
+        position: absolute;
+        width: 30%;
+        height: 30%;
+        top: 35%;
+        left: 35%;
+        border-radius: 50%;
+        background-color: rgba(20, 85, 30, 0.42);
+        pointer-events: none;
+        z-index: 10;
+      }}
+      /* Legal capture ring for squares containing an opponent piece */
+      .legal-capture-ring::after {{
+        content: "";
+        position: absolute;
+        width: 82%;
+        height: 82%;
+        top: 9%;
+        left: 9%;
+        border-radius: 50%;
+        border: 4px solid rgba(20, 85, 30, 0.48);
+        background-color: transparent;
+        pointer-events: none;
+        z-index: 10;
+      }}
+    </style>
+  </head>
+  <body>
+    <div id="status-banner">Make your move...</div>
+    <div id="board"></div>
+
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+    <script>
+      // Nonce ensures Streamlit reloads cleanly on Reset / Next Drill: {session_nonce}
+      const expectedMoves = {moves_json};
+      const playerOrientation = "{orientation}";
+      const playerTurnCode = playerOrientation === "white" ? "w" : "b";
+
+      const game = new Chess();
+      let moveIdx = 0;
+      let selectedSquare = null;
+      let legalTargets = [];
+      let lastMove = null;
+      let isAnimating = false;
+
+      const statusEl = document.getElementById("status-banner");
+
+      function setStatus(text, type = "info") {{
+        statusEl.textContent = text;
+        statusEl.className = type === "info" ? "" : type;
+      }}
+
+      function computeLegalTargets(square) {{
+        if (!square) return [];
+        const moves = game.moves({{ square: square, verbose: true }});
+        return moves.map(m => m.to);
+      }}
+
+      function clearLegalMarkers() {{
+        $("#board .square-55d63").removeClass("legal-move-dot legal-capture-ring");
+      }}
+
+      function showLegalMarkers(square) {{
+        clearLegalMarkers();
+        legalTargets = computeLegalTargets(square);
+        legalTargets.forEach(targetSq => {{
+          const occupant = game.get(targetSq);
+          const $sqEl = $("#board .square-" + targetSq);
+          if (occupant) {{
+            $sqEl.addClass("legal-capture-ring");
+          }} else {{
+            $sqEl.addClass("legal-move-dot");
+          }}
+        }});
+      }}
+
+      function updateHighlights() {{
+        $("#board .square-55d63").removeClass("highlight-last highlight-selected");
+        clearLegalMarkers();
+
+        if (lastMove) {{
+          $("#board .square-" + lastMove.from).addClass("highlight-last");
+          $("#board .square-" + lastMove.to).addClass("highlight-last");
+        }}
+        if (selectedSquare) {{
+          $("#board .square-" + selectedSquare).addClass("highlight-selected");
+          showLegalMarkers(selectedSquare);
+        }} else {{
+          legalTargets = [];
+        }}
+      }}
+
+      function parseUci(uci) {{
+        return {{
+          from: uci.slice(0, 2),
+          to: uci.slice(2, 4),
+          promotion: uci.length > 4 ? uci[4] : "q"
+        }};
+      }}
+
+      function playOpponentMoveIfNeeded() {{
+        if (moveIdx >= expectedMoves.length) {{
+          setStatus("🎉 Line complete! Great job.", "success");
+          return;
+        }}
+        if (game.turn() !== playerTurnCode) {{
+          isAnimating = true;
+          setTimeout(() => {{
+            const oppMoveObj = parseUci(expectedMoves[moveIdx]);
+            const executed = game.move(oppMoveObj);
+            if (executed) {{
+              lastMove = {{ from: executed.from, to: executed.to }};
+              moveIdx++;
+              board.position(game.fen(), true); // true = smooth slide animation
+              updateHighlights();
+            }}
+            isAnimating = false;
+            if (moveIdx >= expectedMoves.length) {{
+              setStatus("🎉 Line complete! Great job.", "success");
+            }} else {{
+              setStatus("Your turn...");
+            }}
+          }}, 280);
+        }}
+      }}
+
+      function attemptPlayerMove(source, target) {{
+        if (isAnimating || moveIdx >= expectedMoves.length) return false;
+        if (game.turn() !== playerTurnCode) return false;
+
+        // Check if move is even legal in chess
+        const testGame = new Chess(game.fen());
+        const legalCheck = testGame.move({{ from: source, to: target, promotion: "q" }});
+        if (!legalCheck) return false;
+
+        const attemptedUci = source + target + (legalCheck.promotion ? legalCheck.promotion : "");
+        const targetUci = expectedMoves[moveIdx];
+
+        if (attemptedUci === targetUci || (source + target) === targetUci.slice(0, 4)) {{
+          const executed = game.move(parseUci(targetUci));
+          lastMove = {{ from: executed.from, to: executed.to }};
+          moveIdx++;
+          selectedSquare = null;
+          board.position(game.fen(), true);
+          updateHighlights();
+
+          if (moveIdx >= expectedMoves.length) {{
+            setStatus("🎉 Line complete! Great job.", "success");
+          }} else {{
+            setStatus("Correct! Keep going...");
+            playOpponentMoveIfNeeded();
+          }}
+          return true;
+        }} else {{
+          setStatus(`Incorrect (${{legalCheck.san}}). Try again!`, "error");
+          return false;
+        }}
+      }}
+
+      // Drag-and-drop handlers
+      function onDragStart(source, piece) {{
+        if (isAnimating || moveIdx >= expectedMoves.length) return false;
+        if (game.turn() !== playerTurnCode) return false;
+        if ((playerTurnCode === "w" && piece.search(/^b/) !== -1) ||
+            (playerTurnCode === "b" && piece.search(/^w/) !== -1)) {{
+          return false;
+        }}
+        selectedSquare = source;
+        updateHighlights();
+        return true;
+      }}
+
+      function onDrop(source, target) {{
+        if (source === target) return; // Allow tap handler to manage selection
+        const valid = attemptPlayerMove(source, target);
+        selectedSquare = null;
+        updateHighlights();
+        if (!valid) {{
+          return "snapback";
+        }}
+      }}
+
+      function onSnapEnd() {{
+        board.position(game.fen(), false);
+        updateHighlights();
+      }}
+
+      const board = Chessboard("board", {{
+        draggable: true,
+        position: "start",
+        orientation: playerOrientation,
+        moveSpeed: 200,
+        snapbackSpeed: 180,
+        snapSpeed: 80,
+        pieceTheme: "https://chessboardjs.com/img/chesspieces/wikipedia/{{piece}}.png",
+        onDragStart: onDragStart,
+        onDrop: onDrop,
+        onSnapEnd: onSnapEnd
+      }});
+
+      // Tap-to-move support (ideal for mobile touchscreens)
+      $("#board").on("click", ".square-55d63", function() {{
+        if (isAnimating || moveIdx >= expectedMoves.length) return;
+        const clickedSq = $(this).attr("data-square");
+        const pieceOnSq = game.get(clickedSq);
+
+        if (!selectedSquare) {{
+          if (pieceOnSq && pieceOnSq.color === playerTurnCode) {{
+            selectedSquare = clickedSq;
+            updateHighlights();
+          }}
+        }} else {{
+          if (clickedSq === selectedSquare) {{
+            selectedSquare = null;
+            updateHighlights();
+            return;
+          }}
+          // If tapping another friendly piece, switch selection and refresh legal dots
+          if (pieceOnSq && pieceOnSq.color === playerTurnCode) {{
+            selectedSquare = clickedSq;
+            updateHighlights();
+            return;
+          }}
+          const success = attemptPlayerMove(selectedSquare, clickedSq);
+          if (!success) {{
+            selectedSquare = null;
+            updateHighlights();
+          }}
+        }}
+      }});
+
+      $(window).resize(() => board.resize());
+
+      // Auto-play White's opening move if user is drilling Black
+      playOpponentMoveIfNeeded();
+    </script>
+  </body>
+  </html>
+  """
+
+  components.html(html_code, height=470)
 
 
 # ==========================================
@@ -187,114 +486,24 @@ else:
       "White" if current_drill["player_color"] == chess.WHITE else "Black"
   )
   st.caption(f"Playing as **{color_label}**")
-  st.info(st.session_state.feedback)
 
-  ranks = (
-      range(7, -1, -1)
-      if current_drill["player_color"] == chess.WHITE
-      else range(8)
+  # Render the smooth animated board
+  render_animated_chessboard(
+      current_drill,
+      session_nonce=f"{st.session_state.drill_idx}_{st.session_state.board_reset_counter}",
   )
-  files = (
-      range(8)
-      if current_drill["player_color"] == chess.WHITE
-      else range(7, -1, -1)
-  )
-
-  square_images = []
-  square_indices = []
-
-  for r in ranks:
-    for f in files:
-      sq = chess.square(f, r)
-      square_indices.append(sq)
-
-      piece = st.session_state.board.piece_at(sq)
-      is_light = (r + f) % 2 != 0
-      bg_color = "#f0d9b5" if is_light else "#b58863"
-      if st.session_state.selected_sq == sq:
-        bg_color = "#cdd26a"
-
-      piece_svg = ""
-      if piece:
-        raw_piece = chess.svg.piece(piece)
-        inner = raw_piece.split(">", 1)[1].rsplit("</svg>", 1)[0]
-        piece_svg = f'<g transform="scale(1.1)">{inner}</g>'
-
-      sq_svg = (
-          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 50">'
-          f'<rect width="50" height="50" fill="{bg_color}"/>{piece_svg}</svg>'
-      )
-      b64 = base64.b64encode(sq_svg.encode("utf-8")).decode("utf-8")
-      square_images.append(f"data:image/svg+xml;base64,{b64}")
-
-  clicked_idx = clickable_images(
-      square_images,
-      titles=[chess.square_name(sq) for sq in square_indices],
-      div_style={
-          "display": "grid",
-          "grid-template-columns": "repeat(8, 1fr)",
-          "max-width": "400px",
-          "margin": "auto",
-          "gap": "0px",
-          "border": "2px solid #333",
-      },
-      img_style={"width": "100%", "display": "block", "cursor": "pointer"},
-      key=f"drill_{st.session_state.drill_idx}_{st.session_state.move_idx}_{st.session_state.selected_sq}",
-  )
-
-  if clicked_idx > -1:
-    tapped_sq = square_indices[clicked_idx]
-
-    if st.session_state.selected_sq is None:
-      piece = st.session_state.board.piece_at(tapped_sq)
-      if piece and piece.color == current_drill["player_color"]:
-        st.session_state.selected_sq = tapped_sq
-        st.rerun()
-    else:
-      if tapped_sq == st.session_state.selected_sq:
-        st.session_state.selected_sq = None
-        st.rerun()
-
-      move_uci = (
-          chess.square_name(st.session_state.selected_sq)
-          + chess.square_name(tapped_sq)
-      )
-      st.session_state.selected_sq = None
-
-      if st.session_state.move_idx < len(current_drill["moves"]):
-        expected_uci = current_drill["moves"][st.session_state.move_idx]
-
-        if move_uci == expected_uci:
-          st.session_state.board.push(chess.Move.from_uci(move_uci))
-          st.session_state.move_idx += 1
-
-          while st.session_state.move_idx < len(current_drill["moves"]):
-            if st.session_state.board.turn != current_drill["player_color"]:
-              opp_move = current_drill["moves"][st.session_state.move_idx]
-              st.session_state.board.push(chess.Move.from_uci(opp_move))
-              st.session_state.move_idx += 1
-            else:
-              break
-
-          if st.session_state.move_idx >= len(current_drill["moves"]):
-            st.session_state.feedback = "🎉 Line complete! Great job."
-          else:
-            st.session_state.feedback = "Correct! Keep going..."
-        else:
-          st.session_state.feedback = f"Incorrect ({move_uci}). Try again!"
-      st.rerun()
 
   col_reset, col_next = st.columns(2)
   with col_reset:
     if st.button("🔄 Reset Board", use_container_width=True):
-      load_current_drill()
+      st.session_state.board_reset_counter += 1
       st.rerun()
 
   with col_next:
     if st.session_state.drill_idx < len(st.session_state.current_drills) - 1:
       if st.button("Next Drill →", use_container_width=True):
         st.session_state.drill_idx += 1
-        load_current_drill()
+        st.session_state.board_reset_counter += 1
         st.rerun()
     else:
       if st.button("🏁 Finish Session", use_container_width=True):
