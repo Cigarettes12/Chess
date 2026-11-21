@@ -392,8 +392,8 @@ def render_animated_chessboard(drill, session_nonce):
 # VIEW 1: THE MENU SCREEN
 # ==========================================
 if st.session_state.app_mode == "menu":
-  st.title("🎯 Chess Opening Trainer")
-  st.write("Select a repertoire category below to choose your opening drill:")
+  st.title("Cigarette-Chess: Openings")
+  st.write("Time to get good")
 
   all_variations = []
   for color, openings in OPENING_DATABASE.items():
@@ -407,7 +407,7 @@ if st.session_state.app_mode == "menu":
         })
 
   if all_variations:
-    if st.button("🔀 Shuffle All Drills (Randomize Everything)", use_container_width=True):
+    if st.button("🔀 Shuffle All Drills", use_container_width=True):
       shuffled = all_variations.copy()
       random.shuffle(shuffled)
       start_drill_session(shuffled)
@@ -440,7 +440,7 @@ if st.session_state.app_mode == "menu":
 
       st.markdown("### Openings")
       for op_name, variations in OPENING_DATABASE[color_key].items():
-        with st.expander(f"📁 {op_name}", expanded=True):
+        with st.expander(f"📁 {op_name}", expanded=False):
           op_vars = [{
               "title": f"{op_name} ({v_name})",
               "player_color": chess.WHITE if color_key == "White" else chess.BLACK,
