@@ -1,5 +1,3 @@
-Color,Opening,Variation,Moves
-White,London System,Main Line (vs 2...Nf6),1. d4 Nf6 2. Bf4 d5 3. e3 e6 4. Nf3
-White,London System,Jabava Attack (vs 2...e6),1. d4 e6 2. Bf4 Nf6 3. e3 c5 4. c3
-Black,Caro-Kann Defense,Classical Variation,1. e4 c6 2. d4 d5 3. Nc3 dxe4 4. Nxe4 Bf5
-Black,Caro-Kann Defense,Advance Variation,1. e4 c6 2. d4 d5 3. e5 Bf5 4. Nf3
+"Color","Opening","Variation","Moves"
+"White","The London","Black's best - vs 6. Be7","1. d4 d5 2. Bf4 Nf6 3. e3 e6 4. Nd2 c5 5. c3 Nc6 6. Nf3 Be7 7. Bd3 O-O 8. Ne5 Nxe5 9. dxe5 Nd7 10. h4 f6 11. Qh5 f5 12. g4 g6 13. Qh6 Kh8 14. gxf5 exf5 15. Nf3"
+"Black","Caro-Kann","Advance - vs 4. c3 (The Good French)","1. e4 c6 2. d4 d5 3. e5 c5 4. c3 Nc6 5. Nf3 cxd4 6. cxd4 Bg4 7. Be2 e6 8. O-O Nge7 9. Nc3 Nf5 10. Be3 Be7 11. a3 Rc8"
