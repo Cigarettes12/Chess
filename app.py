@@ -1,6 +1,9 @@
 import base64
+import csv
+import io
 import random
 import chess
+import chess.pgn
 import chess.svg
 import streamlit as st
 from streamlit_clickable_images import clickable_images
@@ -8,90 +11,44 @@ from streamlit_clickable_images import clickable_images
 # 1. Page Configuration
 st.set_page_config(page_title="Chess Opening Trainer", layout="centered")
 
-# 2. Comprehensive Opening Database with Variations
-# Organized by Color -> Opening Name -> Variation Name -> Move List (UCI format)
-OPENING_DATABASE = {
-    "White": {
-        "London System": {
-            "Main Line (vs 2...Nf6)": [
-                "d2d4",
-                "g8f6",
-                "c1f4",
-                "d7d5",
-                "e2e3",
-                "e7e6",
-                "g1f3",
-            ],
-            "Jabava Attack (vs 2...e6)": [
-                "d2d4",
-                "e7e6",
-                "c1f4",
-                "g8f6",
-                "e2e3",
-                "c7c5",
-                "c2c3",
-            ],
-        },
-        "Italian Game": {
-            "Giuoco Piano": [
-                "e2e4",
-                "e7e5",
-                "g1f3",
-                "b8c6",
-                "f1c4",
-                "f8c5",
-                "c2c3",
-            ],
-            "Two Knights Defense": [
-                "e2e4",
-                "e7e5",
-                "g1f3",
-                "b8c6",
-                "f1c4",
-                "g8f6",
-                "d2d4",
-            ],
-        },
-    },
-    "Black": {
-        "Caro-Kann Defense": {
-            "Classical Variation": [
-                "e2e4",
-                "c7c6",
-                "d2d4",
-                "d7d5",
-                "b1c3",
-                "d5e4",
-                "c3e4",
-                "c8f5",
-            ],
-            "Advance Variation": [
-                "e2e4",
-                "c7c6",
-                "d2d4",
-                "d7d5",
-                "e4e5",
-                "c8f5",
-                "g1f3",
-            ],
-        },
-        "French Defense": {
-            "Advance Variation": [
-                "e2e4",
-                "e7e6",
-                "d2d4",
-                "d7d5",
-                "e4e5",
-                "c7c5",
-                "c2c3",
-            ],
-        },
-    },
-}
+
+# 2. Load & Parse Opening Database from openings.csv
+@st.cache_data
+def load_openings_from_csv(filepath="openings.csv"):
+  database = {"White": {}, "Black": {}}
+
+  try:
+    with open(filepath, mode="r", encoding="utf-8-sig") as f:
+      reader = csv.DictReader(f)
+      for row in reader:
+        color = row.get("Color", "").strip().capitalize()
+        opening = row.get("Opening", "").strip()
+        variation = row.get("Variation", "").strip()
+        moves_str = row.get("Moves", "").strip()
+
+        if color not in database or not opening or not variation or not moves_str:
+          continue
+
+        # Parse standard chess notation (e.g., "1. d4 Nf6 2. Bf4") into UCI moves
+        pgn_io = io.StringIO(moves_str)
+        game = chess.pgn.read_game(pgn_io)
+        if game:
+          uci_moves = [move.uci() for move in game.mainline_moves()]
+          if uci_moves:
+            database[color].setdefault(opening, {})[variation] = uci_moves
+  except FileNotFoundError:
+    st.error(
+        "Could not find `openings.csv` in your repository. Please upload it to GitHub."
+    )
+
+  return database
+
+
+OPENING_DATABASE = load_openings_from_csv()
 
 # 3. Initialize Session State
 if "app_mode" not in st.session_state:
-  st.session_state.app_mode = "menu"  # "menu" or "drilling"
+  st.session_state.app_mode = "menu"
 if "current_drills" not in st.session_state:
   st.session_state.current_drills = []
 if "drill_idx" not in st.session_state:
@@ -139,7 +96,6 @@ if st.session_state.app_mode == "menu":
   st.title("🎯 Chess Opening Trainer")
   st.write("Select a repertoire category below to choose your opening drill:")
 
-  # Collect all individual variations for a global "Shuffle All" option
   all_variations = []
   for color, openings in OPENING_DATABASE.items():
     p_color = chess.WHITE if color == "White" else chess.BLACK
@@ -151,20 +107,23 @@ if st.session_state.app_mode == "menu":
             "moves": moves,
         })
 
-  if st.button("🔀 Shuffle All Drills (Randomize Everything)", use_container_width=True):
-    shuffled = all_variations.copy()
-    random.shuffle(shuffled)
-    start_drill_session(shuffled)
-    st.rerun()
+  if all_variations:
+    if st.button("🔀 Shuffle All Drills (Randomize Everything)", use_container_width=True):
+      shuffled = all_variations.copy()
+      random.shuffle(shuffled)
+      start_drill_session(shuffled)
+      st.rerun()
 
   st.divider()
 
-  # Tabs for White vs Black repertoires
   tab_white, tab_black = st.tabs(["White Repertoire", "Black Repertoire"])
 
   for tab, color_key in zip([tab_white, tab_black], ["White", "Black"]):
     with tab:
-      # Gather all variations for this color specifically
+      if not OPENING_DATABASE[color_key]:
+        st.info(f"No {color_key} openings found in openings.csv yet.")
+        continue
+
       color_variations = []
       for op_name, variations in OPENING_DATABASE[color_key].items():
         for var_name, moves in variations.items():
@@ -183,7 +142,6 @@ if st.session_state.app_mode == "menu":
       st.markdown("### Openings")
       for op_name, variations in OPENING_DATABASE[color_key].items():
         with st.expander(f"📁 {op_name}", expanded=True):
-          # Shuffle option specifically for this opening family
           op_vars = [{
               "title": f"{op_name} ({v_name})",
               "player_color": chess.WHITE if color_key == "White" else chess.BLACK,
@@ -214,7 +172,6 @@ if st.session_state.app_mode == "menu":
 else:
   current_drill = st.session_state.current_drills[st.session_state.drill_idx]
 
-  # Top Bar: Back to Menu & Progress Counter
   col_back, col_prog = st.columns([1, 2])
   with col_back:
     if st.button("← Menu", use_container_width=True):
@@ -232,7 +189,6 @@ else:
   st.caption(f"Playing as **{color_label}**")
   st.info(st.session_state.feedback)
 
-  # Render Chessboard
   ranks = (
       range(7, -1, -1)
       if current_drill["player_color"] == chess.WHITE
@@ -286,7 +242,6 @@ else:
       key=f"drill_{st.session_state.drill_idx}_{st.session_state.move_idx}_{st.session_state.selected_sq}",
   )
 
-  # Move handling logic
   if clicked_idx > -1:
     tapped_sq = square_indices[clicked_idx]
 
@@ -313,7 +268,6 @@ else:
           st.session_state.board.push(chess.Move.from_uci(move_uci))
           st.session_state.move_idx += 1
 
-          # Play opponent response automatically if available
           while st.session_state.move_idx < len(current_drill["moves"]):
             if st.session_state.board.turn != current_drill["player_color"]:
               opp_move = current_drill["moves"][st.session_state.move_idx]
@@ -330,7 +284,6 @@ else:
           st.session_state.feedback = f"Incorrect ({move_uci}). Try again!"
       st.rerun()
 
-  # In-drill Navigation Footer
   col_reset, col_next = st.columns(2)
   with col_reset:
     if st.button("🔄 Reset Board", use_container_width=True):
